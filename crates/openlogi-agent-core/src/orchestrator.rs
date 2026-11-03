@@ -763,6 +763,22 @@ impl Orchestrator {
         self.shared.clone()
     }
 
+    /// Where a feedback pulse for `device_key` (or the active device) should
+    /// play: an online device with a haptic engine whose ring haptics are on.
+    /// Local patch for gesture and monitor-change haptics.
+    #[must_use]
+    pub fn feedback_haptic_route(&self, device_key: Option<&str>) -> Option<DeviceRoute> {
+        let key = device_key.or_else(|| self.current_key())?;
+        let device = self.devices.iter().find(|device| device.config_key == key)?;
+        (device.online
+            && self.config.action_ring(key).haptics
+            && device
+                .capabilities
+                .is_some_and(|capabilities| capabilities.haptic_feedback))
+        .then(|| device.route.clone())
+        .flatten()
+    }
+
     fn current_key(&self) -> Option<&str> {
         self.devices
             .get(self.current)

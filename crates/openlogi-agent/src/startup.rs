@@ -60,7 +60,7 @@ pub(crate) async fn bootstrap(config: Config) -> Option<Core> {
         Arc::clone(&observable),
     )));
     let shared = orchestrator.lock().await.shared();
-    let inputs = InputServices::start(&shared)?;
+    let mut inputs = InputServices::start(&shared)?;
     let backlight_overlay = BacklightOverlayManager::default();
 
     // Shared between the hook callback (which mirrors events into it) and
@@ -83,6 +83,15 @@ pub(crate) async fn bootstrap(config: Config) -> Option<Core> {
         &inputs,
         backlight_overlay.clone(),
     );
+    if let Some(fired) = inputs.gesture_fired_rx.take() {
+        crate::feedback::spawn_gesture_feedback(
+            fired,
+            Arc::clone(&orchestrator),
+            ring_haptics.clone(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    crate::feedback::spawn_monitor_feedback(Arc::clone(&orchestrator), ring_haptics.clone());
     Some(Core {
         orchestrator,
         shared,
@@ -131,6 +140,9 @@ pub(crate) struct InputServices {
     action_runtime: ActionRuntime,
     pub(crate) scroll_input: ScrollInputHandle,
     scroll_runtime: ScrollRuntime,
+    /// Local patch: gestures report here for a haptic pulse.
+    pub(crate) gesture_fired: tokio::sync::mpsc::UnboundedSender<String>,
+    gesture_fired_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 }
 
 impl InputServices {
@@ -158,7 +170,10 @@ impl InputServices {
         };
         let dispatcher = action_runtime.dispatcher();
         let scroll_input = scroll_runtime.input();
+        let (gesture_fired, gesture_fired_rx) = tokio::sync::mpsc::unbounded_channel();
         Some(Self {
+            gesture_fired,
+            gesture_fired_rx: Some(gesture_fired_rx),
             ring,
             triggers,
             dispatcher,
@@ -210,7 +225,8 @@ pub(crate) fn spawn_hidpp_watchers(
             inputs.dispatcher.clone(),
             inputs.scroll_input.clone(),
             shared.hook_maps.clone(),
-        ),
+        )
+        .with_feedback(inputs.gesture_fired.clone()),
     );
     let host_switch = watchers::host_switch::spawn(
         &shared.host_switch_links,
