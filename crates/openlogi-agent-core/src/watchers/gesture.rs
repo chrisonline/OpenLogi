@@ -58,6 +58,9 @@ pub struct GestureOutputs {
     actions: ActionDispatcher,
     scroll: ScrollInputHandle,
     hook_maps: SharedHookMaps,
+    /// Device keys of gestures that fired, for haptic confirmation. Local
+    /// patch: Options+ pulses on a recognised gesture.
+    feedback: Option<mpsc::UnboundedSender<String>>,
 }
 
 impl GestureOutputs {
@@ -72,6 +75,20 @@ impl GestureOutputs {
             actions,
             scroll,
             hook_maps,
+            feedback: None,
+        }
+    }
+
+    /// Report every dispatched gesture's device key to `feedback`.
+    #[must_use]
+    pub fn with_feedback(mut self, feedback: mpsc::UnboundedSender<String>) -> Self {
+        self.feedback = Some(feedback);
+        self
+    }
+
+    fn gesture_fired(&self, device_key: &str) {
+        if let Some(feedback) = &self.feedback {
+            let _ = feedback.send(device_key.to_owned());
         }
     }
 

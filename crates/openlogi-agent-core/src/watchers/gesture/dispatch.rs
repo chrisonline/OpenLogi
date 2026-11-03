@@ -226,11 +226,13 @@ impl InputDispatcher {
                     .and_then(|map| map.get(&direction))
                 {
                     debug!(key, %button, ?direction, action = %action.label(), "gesture → action");
-                    if !self
+                    if self
                         .outputs
                         .actions
                         .try_dispatch_while_pressed(press, action)
                     {
+                        self.outputs.gesture_fired(key);
+                    } else {
                         debug!(key, %button, ?direction, "gesture press no longer active — ignored");
                     }
                 } else {
