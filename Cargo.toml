@@ -165,3 +165,8 @@ debug = false
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+
+# Local patch: skip the 0x0 wp_viewport destination that kills the overlay's
+# Wayland connection at any output scale other than 1.0 (OpenLogi#1989).
+[patch.crates-io]
+gpui-pre-linux = { path = "patches/gpui-pre-linux" }
