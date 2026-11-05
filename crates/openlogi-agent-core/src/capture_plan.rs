@@ -8,14 +8,14 @@
 //! plan of the session it arrived on, never against a global selected-device
 //! map.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use openlogi_core::binding::{
     Action, Binding, ButtonId, GamingLayout, GestureDirection, default_binding,
 };
 use openlogi_core::bindings::{button_bindings_for, hidpp_gesture_maps_for, oshook_gestures_for};
-use openlogi_core::config::{Config, OnboardMemory, ThumbwheelSensitivity};
+use openlogi_core::config::{Config, MomentumScrolling, OnboardMemory, ThumbwheelSensitivity};
 use openlogi_core::device_order::PhysicalDeviceKey;
 use openlogi_hid::DeviceRoute;
 use openlogi_hid::reprog_controls::DPI_MODE_SHIFT_CIDS;
@@ -24,6 +24,8 @@ use openlogi_hid::session::gesture::{
     SlotRoute,
 };
 use tokio::sync::watch;
+
+use crate::runtime::PointerSelection;
 
 /// Hardware identity of one HID++ capture session.
 ///
@@ -74,11 +76,15 @@ pub struct DispatchPlan {
     /// it as Logi Options+ does. Read from the
     /// inversion source the main wheel uses on the device's current link,
     /// which [`plan_for_device`] cannot see: the orchestrator fills it in,
-    /// as it does [`Self::pointer_target`].
+    /// as it does `pointer`.
     pub invert_wheel: bool,
-    /// Pointer identity used to select these mouse bindings; absent for the
+    /// This device's effective momentum-scrolling settings (device override
+    /// or the app-wide default), carried with each report of its diverted
+    /// main wheel.
+    pub momentum: MomentumScrolling,
+    /// Pointer context used to select these mouse bindings; absent for the
     /// explicitly focused policy and keyboard input.
-    pub pointer_target: Option<openlogi_hook::PointerTarget>,
+    pub(crate) pointer: Option<PointerSelection>,
     /// Bindings used while G-Shift is held.
     pub shift_bindings: BTreeMap<ButtonId, Binding>,
 }
@@ -252,6 +258,32 @@ pub(crate) fn hidpp_side_gesture_maps_for(
         .collect()
 }
 
+/// Buttons that `config_key` binds unlike the `focused` application while
+/// the pointer selects the bindings of `hovered`.
+///
+/// A per-app override replaces a whole button
+/// ([`Config::effective_bindings`]). Every action that another button
+/// resolves to, whether tap, hold, or swipe, is therefore the one that the
+/// focused application gets.
+#[must_use]
+pub(crate) fn buttons_unlike_focus(
+    config: &Config,
+    config_key: Option<&str>,
+    hovered: Option<&str>,
+    focused: Option<&str>,
+) -> BTreeSet<ButtonId> {
+    let Some(key) = config_key.filter(|_| hovered != focused) else {
+        return BTreeSet::new();
+    };
+    let here = config.effective_bindings(key, hovered);
+    let there = config.effective_bindings(key, focused);
+    here.keys()
+        .chain(there.keys())
+        .filter(|button| here.get(button) != there.get(button))
+        .copied()
+        .collect()
+}
+
 /// `config_key`'s G-Shift layer as bindings.
 pub(crate) fn shift_bindings_for(config: &Config, config_key: &str) -> BTreeMap<ButtonId, Binding> {
     config
@@ -406,7 +438,8 @@ pub fn plan_for_device(
             side_gesture_bindings,
             thumbwheel_sensitivity,
             invert_wheel: false,
-            pointer_target: None,
+            momentum: config.momentum_scrolling(config_key),
+            pointer: None,
             shift_bindings: shift_bindings_for(config, config_key),
         },
     }
@@ -449,6 +482,26 @@ mod tests {
         plan.target.spec.divert_main_wheel = None;
         assert!(!CapturePublication::from_plans(vec![plan]).diverts_main_wheel(&route()));
         assert!(!CapturePublication::default().diverts_main_wheel(&route()));
+    }
+
+    /// A device's dispatch carries its own momentum-scrolling settings, and
+    /// a device without them the app-wide default.
+    #[test]
+    fn the_dispatch_carries_the_devices_momentum_settings() {
+        let mut config = Config::default();
+        config.app_settings.momentum_scrolling.enabled = true;
+        let own = MomentumScrolling {
+            glide_ms: 800,
+            ..MomentumScrolling::default()
+        };
+        config.set_device_momentum_scrolling("mouse", Some(own));
+        let momentum = |key| {
+            plan_for_device(&config, key, route(), None, 0, true)
+                .dispatch
+                .momentum
+        };
+        assert_eq!(momentum("mouse"), own);
+        assert_eq!(momentum("other"), config.app_settings.momentum_scrolling);
     }
 
     fn plan_for_device(
